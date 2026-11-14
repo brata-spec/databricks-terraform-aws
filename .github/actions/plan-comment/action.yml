@@ -1,0 +1,48 @@
+name: plan-comment
+description: Post (or update) one PR comment with the plan files in .plans/
+inputs:
+  title:
+    description: Comment heading / unique marker, e.g. "de-dev"
+    required: true
+  dir:
+    description: Folder with <name>.txt plan files
+    default: .plans
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v7
+      env:
+        TITLE: ${{ inputs.title }}
+        PLAN_DIR: ${{ inputs.dir }}
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const title = process.env.TITLE;
+          const dir = process.env.PLAN_DIR;
+          const marker = `<!-- terraform-plan:${title} -->`;
+          const files = fs.existsSync(dir)
+            ? fs.readdirSync(dir).filter(f => f.endsWith('.txt')).sort()
+            : [];
+
+          let body = `${marker}\n### Terraform plan: \`${title}\`\n`;
+          if (files.length === 0) body += '\nNo plan output. Check the job log.\n';
+          for (const f of files) {
+            let text = fs.readFileSync(path.join(dir, f), 'utf8');
+            const m = text.match(/^(Plan: .*|No changes\..*|Skipped: .*|Plan failed.*)$/m);
+            const summary = m ? m[0] : 'see details';
+            if (text.length > 25000) text = text.slice(0, 25000) + '\n... truncated, see the job log';
+            body += `\n<details><summary><b>${f.replace('.txt', '')}</b>: ${summary}</summary>\n\n` +
+                    '```\n' + text + '\n```\n</details>\n';
+          }
+          body += `\n_Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}_\n`;
+
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+          const existing = comments.find(c => c.body && c.body.startsWith(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }

@@ -1,0 +1,132 @@
+name: terraform-plan
+
+# On every PR: lint, work out which team/env targets changed, plan only those,
+# and post one comment per target.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write       # GitHub OIDC -> AWS plan role
+  pull-requests: write  # plan comments
+
+concurrency:
+  group: terraform-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  TF_VERSION: "~1.11.0"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_VAR_databricks_account_id: ${{ vars.DATABRICKS_ACCOUNT_ID }}
+  TF_VAR_deployer_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+  DATABRICKS_AUTH_TYPE: oauth-m2m # use the SP secret; don't auto-pick GitHub OIDC
+
+jobs:
+  lint:
+    name: fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      - name: template variables are identical
+        run: |
+          diff -u workspace-level/_template/workspace/variables.tf workspace-level/_template/config/variables.tf \
+            || { echo "::error::_template/workspace/variables.tf and _template/config/variables.tf must be identical"; exit 1; }
+
+      - name: every team folder has only dev.tfvars / prod.tfvars
+        run: |
+          bad=$(find workspace-level -mindepth 2 -maxdepth 2 -type f ! -path 'workspace-level/_template/*' \
+                ! -name dev.tfvars ! -name prod.tfvars ! -name README.md)
+          [[ -z "$bad" ]] || { echo "::error::unexpected files: $bad"; exit 1; }
+
+      - name: terraform validate
+        run: |
+          set -euo pipefail
+          for dir in bootstrap account-level workspace-level/_template/workspace workspace-level/_template/config; do
+            echo "::group::validate $dir"
+            terraform -chdir="$dir" init -backend=false -input=false >/dev/null
+            terraform -chdir="$dir" validate -no-color
+            echo "::endgroup::"
+          done
+
+  detect:
+    name: changed targets
+    runs-on: ubuntu-latest
+    outputs:
+      account: ${{ steps.c.outputs.account }}
+      targets: ${{ steps.c.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: c
+        run: bash scripts/changed-targets.sh --base "${{ github.event.pull_request.base.sha }}"
+
+  plan-account:
+    name: plan account
+    needs: [lint, detect]
+    if: needs.detect.outputs.account == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          role-session-name: gha-plan-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - run: bash scripts/tf.sh plan account
+
+      - if: always()
+        uses: ./.github/actions/plan-comment
+        with:
+          title: account
+
+  plan:
+    name: plan ${{ matrix.team }}-${{ matrix.env }}
+    needs: [lint, detect]
+    if: needs.detect.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          role-session-name: gha-plan-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - run: bash scripts/tf.sh plan "${{ matrix.team }}" "${{ matrix.env }}"
+
+      - if: always()
+        uses: ./.github/actions/plan-comment
+        with:
+          title: ${{ matrix.team }}-${{ matrix.env }}

@@ -1,0 +1,6 @@
+# Keep LF line endings in the repo so Windows checkouts and Linux CI agree
+# (avoids terraform fmt diffs and broken shell scripts in GitHub Actions).
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.zip binary
+*.png binary

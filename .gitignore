@@ -1,0 +1,16 @@
+.terraform/
+.terraform-data/
+.plans/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+.terraform.tfstate.lock.info
+# local overrides / secrets
+*.auto.tfvars
+bootstrap/terraform.tfvars
+override.tf
+override.tf.json
+*_override.tf
+.databrickscfg

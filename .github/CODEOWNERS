@@ -1,0 +1,13 @@
+# Platform team owns the shared code; each team owns its own tfvars.
+# Replace the handles with real GitHub teams. Enforce with branch protection
+# ("Require review from Code Owners") where your GitHub plan supports it.
+*                               @brata-spec/platform
+/modules/                       @brata-spec/platform
+/account-level/                 @brata-spec/platform
+/workspace-level/_template/     @brata-spec/platform
+/.github/                       @brata-spec/platform
+/bootstrap/                     @brata-spec/platform
+
+/workspace-level/de/            @brata-spec/platform @brata-spec/data-engineering
+/workspace-level/ds/            @brata-spec/platform @brata-spec/data-science
+/workspace-level/elections/     @brata-spec/platform @brata-spec/elections
