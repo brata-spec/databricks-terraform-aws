@@ -8,6 +8,6 @@
 /.github/                       @brata-spec/platform
 /bootstrap/                     @brata-spec/platform
 
-/workspace-level/de/            @brata-spec/platform @brata-spec/data-engineering
+/workspace-level/de/            @brata-spec/platform
 /workspace-level/ds/            @brata-spec/platform @brata-spec/data-science
 /workspace-level/elections/     @brata-spec/platform @brata-spec/elections

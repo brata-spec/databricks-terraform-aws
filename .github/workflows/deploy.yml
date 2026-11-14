@@ -1,0 +1,228 @@
+name: 2-deploy
+
+# Stage 2, on merge to main (or Run workflow for one team):
+#
+#   detect ─> account (if changed) ─> dev: plan + deploy ─> prod: plan (saved) ─> [approval] ─> prod: deploy saved plan
+#
+# Every team/env is its own matrix job with its own state and its own
+# concurrency group (tf-<team>-<env>), so teams never block or overwrite each other.
+#
+# Prod gate (repo variable PROD_GATE):
+#   reviewers  -> the prod jobs wait for the required reviewers of the 'prod' environment
+#   unset / anything else (default; GitHub Free) -> the run stops after the prod plan, and a
+#                 person runs '3-promote-prod' with this run's ID to apply the saved plans.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "account-level/**"
+      - "workspace-level/**"
+      - "modules/**"
+      - "scripts/**"
+      - ".github/workflows/deploy.yml"
+      - ".github/actions/**"
+  workflow_dispatch:
+    inputs:
+      team:
+        description: "Team folder under workspace-level/ (or 'all')"
+        type: string
+        default: all
+      account:
+        description: "Also apply account-level"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_VAR_databricks_account_id: ${{ vars.DATABRICKS_ACCOUNT_ID }}
+  TF_VAR_deployer_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+  DATABRICKS_AUTH_TYPE: oauth-m2m
+
+jobs:
+  detect:
+    name: targets
+    runs-on: ubuntu-latest
+    outputs:
+      account: ${{ steps.c.outputs.account }}
+      dev: ${{ steps.c.outputs.dev }}
+      prod: ${{ steps.c.outputs.prod }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: c
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          IN_TEAM: ${{ inputs.team }}
+          IN_ACCOUNT: ${{ inputs.account }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == push ]]; then args=(--base "$BEFORE"); else args=(--all --team "$IN_TEAM"); fi
+          dev=$(GITHUB_OUTPUT= bash scripts/changed-targets.sh "${args[@]}" --env dev)
+          prod=$(GITHUB_OUTPUT= bash scripts/changed-targets.sh "${args[@]}" --env prod)
+          account=$(sed -n 's/^account=//p' <<<"$dev")
+          dev_t=$(sed -n 's/^targets=//p' <<<"$dev")
+          prod_t=$(sed -n 's/^targets=//p' <<<"$prod")
+          [[ "$EVENT" == push ]] || account="$IN_ACCOUNT"
+          if [[ "$EVENT" != push && "$dev_t" == "[]" && "$prod_t" == "[]" ]]; then
+            echo "::error::no workspace-level/$IN_TEAM/*.tfvars"; exit 1
+          fi
+          printf 'account=%s\ndev=%s\nprod=%s\n' "$account" "$dev_t" "$prod_t" | tee -a "$GITHUB_OUTPUT"
+
+  account:
+    name: account deploy
+    needs: detect
+    if: needs.detect.outputs.account == 'true'
+    runs-on: ubuntu-latest
+    environment: dev # account-level needs only the state bucket + the Databricks SP
+    concurrency:
+      group: tf-account
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/tf-setup
+        with:
+          role-arn: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          session-name: deploy-account-${{ github.run_id }}
+      - run: bash scripts/tf.sh plan account
+      - run: bash scripts/plan-summary.sh .plans "account" >>"$GITHUB_STEP_SUMMARY"
+      - run: bash scripts/tf.sh apply-saved account
+
+  # ---------------------------------------------------------------- DEV
+  dev:
+    name: dev ${{ matrix.team }}
+    needs: [detect, account]
+    if: >-
+      always() && needs.detect.result == 'success' && needs.detect.outputs.dev != '[]' &&
+      contains(fromJSON('["success","skipped"]'), needs.account.result)
+    runs-on: ubuntu-latest
+    environment: dev
+    concurrency:
+      group: tf-${{ matrix.team }}-dev
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.dev) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/tf-setup
+        with:
+          role-arn: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          session-name: deploy-dev-${{ matrix.team }}-${{ github.run_id }}
+      - name: dev plan
+        run: bash scripts/tf.sh plan "${{ matrix.team }}" dev
+      - run: bash scripts/plan-summary.sh .plans "dev ${{ matrix.team }}" >>"$GITHUB_STEP_SUMMARY"
+      - name: dev deploy
+        run: bash scripts/tf.sh apply-saved "${{ matrix.team }}" dev
+
+  # ---------------------------------------------------------------- PROD PLAN
+  # Waits for ALL dev targets: a change that breaks any dev never reaches prod.
+  prod-plan:
+    name: prod plan ${{ matrix.team }}
+    needs: [detect, account, dev]
+    if: >-
+      always() && needs.detect.result == 'success' && needs.detect.outputs.prod != '[]' &&
+      contains(fromJSON('["success","skipped"]'), needs.account.result) &&
+      contains(fromJSON('["success","skipped"]'), needs.dev.result)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.prod) }}
+    env:
+      TF_LOCK: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/tf-setup
+        with:
+          role-arn: ${{ vars.AWS_PLAN_ROLE_ARN }} # read-only
+          session-name: deploy-prodplan-${{ matrix.team }}-${{ github.run_id }}
+      - name: prod plan
+        run: bash scripts/tf.sh plan "${{ matrix.team }}" prod
+      - run: bash scripts/plan-summary.sh .plans "prod ${{ matrix.team }}" >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prod-plan-${{ matrix.team }}
+          path: .plans/
+          include-hidden-files: true
+          retention-days: 7
+
+  # Which prod targets actually have changes -> only those wait for approval.
+  prod-changes:
+    name: prod changes
+    needs: prod-plan
+    if: always() && needs.prod-plan.result == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.c.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: prod-plan-*
+          path: prod-plans
+      - id: c
+        env:
+          PROD_GATE: ${{ vars.PROD_GATE }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          json="["; sep=""
+          for d in prod-plans/prod-plan-*; do
+            [[ -d "$d" ]] || continue
+            team="${d##*/prod-plan-}"
+            if compgen -G "$d/*.changes" >/dev/null || compgen -G "$d/*.skipped" >/dev/null; then
+              json+="$sep{\"team\":\"$team\"}"; sep=","
+            fi
+          done
+          json+="]"
+          echo "targets=$json" | tee -a "$GITHUB_OUTPUT"
+          {
+            bash scripts/plan-summary.sh prod-plans "Prod plans (run $RUN_ID)"
+            if [[ "$json" == "[]" ]]; then
+              echo "No prod changes."
+            elif [[ "$PROD_GATE" != reviewers ]]; then
+              echo "**To deploy prod:** Actions → 3-promote-prod → Run workflow → run_id \`$RUN_ID\`"
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- PROD DEPLOY
+  prod:
+    name: prod ${{ matrix.team }}
+    needs: prod-changes
+    if: >-
+      always() && needs.prod-changes.result == 'success' &&
+      needs.prod-changes.outputs.targets != '[]' && vars.PROD_GATE == 'reviewers'
+    runs-on: ubuntu-latest
+    environment: prod # required reviewers approve here
+    concurrency:
+      group: tf-${{ matrix.team }}-prod
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.prod-changes.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: prod-plan-${{ matrix.team }}
+          path: .plans
+      - uses: ./.github/actions/tf-setup
+        with:
+          role-arn: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          session-name: deploy-prod-${{ matrix.team }}-${{ github.run_id }}
+      - name: prod deploy (saved plan)
+        run: bash scripts/tf.sh apply-saved "${{ matrix.team }}" prod

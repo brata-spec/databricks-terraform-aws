@@ -16,6 +16,12 @@ variable "platform_admin_group" {
   default     = "dbr-platform-admins"
 }
 
+variable "create_platform_admin_group" {
+  description = "Create platform_admin_group here (true) or look up an existing one (false)"
+  type        = bool
+  default     = false
+}
+
 variable "manage_deployer_membership" {
   description = "Add the deployer service principal to platform_admin_group (needed to create catalogs)"
   type        = bool

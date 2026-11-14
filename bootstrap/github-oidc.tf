@@ -1,7 +1,7 @@
 ###############################################################################
 # GitHub Actions -> AWS via OIDC (no stored AWS keys)
 #
-#   <prefix>-gha-plan         pull requests: read-only AWS + state read/lock
+#   <prefix>-gha-plan         pull requests + plan_branches (main): read-only AWS + state read
 #   <prefix>-gha-apply-<env>  only jobs running in GitHub environment <env>
 #                             (protect prod with required reviewers in GitHub)
 ###############################################################################
@@ -61,7 +61,11 @@ data "aws_iam_policy_document" "plan_trust" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = [for p in local.sub_prefixes : "${p}:pull_request"]
+      # PR plans + the prod plan that runs on main before approval (read-only role)
+      values = concat(
+        [for p in local.sub_prefixes : "${p}:pull_request"],
+        flatten([for p in local.sub_prefixes : [for b in var.plan_branches : "${p}:ref:refs/heads/${b}"]]),
+      )
     }
   }
 }

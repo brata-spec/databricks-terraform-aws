@@ -1,12 +1,15 @@
-aws_region           = "us-east-1"
-name_prefix          = "dbx"
-github_org           = "brata-spec"
-github_repo          = "terraform-platform"
-environments         = ["dev", "prod"]
-create_oidc_provider = true # false if the account already has the GitHub OIDC provider
+# Fresh, separate setup in AWS account 473640421776 (nothing shared with the "dbx" setup)
+#   state bucket: dbxp-tfstate-473640421776-us-east-1
+#   roles:        dbxp-gha-plan, dbxp-gha-apply-dev, dbxp-gha-apply-prod
+aws_region   = "us-east-1"
+name_prefix  = "dbxp" # every resource this repo creates starts with dbxp-
+github_org   = "brata-spec"
+github_repo  = "terraform-platform"
+environments = ["dev", "prod"]
 
-# If `gh api repos/<org>/<repo>/actions/oidc/customization/sub` shows
-# "use_immutable_subject": true, copy the two numbers from sub_claim_prefix:
-#   repo:<org>@<owner_id>/terraform-platform@<repo_id>
-github_owner_id = "<owner_id>"
-github_repo_id  = "<repo_id>"
+# AWS allows ONE GitHub OIDC provider per account and the first setup already created it -> reuse.
+create_oidc_provider = false
+
+github_owner_id       = "321619243"
+github_repo_id        = "<repo id>" # gh api repos/brata-spec/terraform-platform --jq .id
+trust_classic_subject = true

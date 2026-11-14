@@ -45,6 +45,8 @@ variable "network" {
     new_subnets       = optional(map(string), {})
     route_table_ids   = optional(map(string), {})
     security_group_id = optional(string)
+    # SGs of existing interface endpoints (STS/Kinesis) to open for this workspace
+    endpoint_security_group_ids = optional(list(string), [])
   })
 }
 

@@ -1,0 +1,116 @@
+name: 3-promote-prod
+
+# Stage 3 (when PROD_GATE is not 'reviewers', e.g. GitHub Free):
+# apply the prod plans saved by a '2-deploy' run, exactly as planned.
+# Only the commit currently at the tip of main can be promoted.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID of the 2-deploy run (from its URL / summary)"
+        type: string
+        required: true
+      team:
+        description: "Team to promote (or 'all' = every team with changes in that run)"
+        type: string
+        default: all
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read # download artifacts from the other run
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_VAR_databricks_account_id: ${{ vars.DATABRICKS_ACCOUNT_ID }}
+  TF_VAR_deployer_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+  DATABRICKS_AUTH_TYPE: oauth-m2m
+
+jobs:
+  check:
+    name: check run + collect plans
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.c.outputs.targets }}
+      sha: ${{ steps.r.outputs.sha }}
+    steps:
+      - name: source run is a successful 2-deploy on current main
+        id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::run_id must be a number"; exit 1; }
+          read -r name branch sha conclusion < <(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID" \
+            --jq '[.name, .head_branch, .head_sha, (.conclusion // "in_progress")] | @tsv')
+          main=$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)
+          echo "run: $name on $branch @ $sha ($conclusion); main is $main"
+          [[ "$name" == "2-deploy" ]]  || { echo "::error::run $RUN_ID is '$name', not 2-deploy"; exit 1; }
+          [[ "$branch" == "main" ]]    || { echo "::error::run is from '$branch', not main"; exit 1; }
+          [[ "$conclusion" == success ]] || { echo "::error::run did not succeed ($conclusion)"; exit 1; }
+          [[ "$sha" == "$main" ]]      || { echo "::error::main has moved on since that run. Promote the latest 2-deploy run instead."; exit 1; }
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.r.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: prod-plan-*
+          path: prod-plans
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - id: c
+        env:
+          IN_TEAM: ${{ inputs.team }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          json="["; sep=""
+          for d in prod-plans/prod-plan-*; do
+            [[ -d "$d" ]] || continue
+            team="${d##*/prod-plan-}"
+            [[ "$IN_TEAM" == all || "$IN_TEAM" == "$team" ]] || continue
+            if compgen -G "$d/*.changes" >/dev/null || compgen -G "$d/*.skipped" >/dev/null; then
+              json+="$sep{\"team\":\"$team\"}"; sep=","
+            fi
+          done
+          json+="]"
+          echo "targets=$json" | tee -a "$GITHUB_OUTPUT"
+          bash scripts/plan-summary.sh prod-plans "Promoting run $RUN_ID" >>"$GITHUB_STEP_SUMMARY"
+          [[ "$json" != "[]" ]] || echo "::notice::Nothing to promote (no changes for '$IN_TEAM')."
+
+  prod:
+    name: prod ${{ matrix.team }}
+    needs: check
+    if: needs.check.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    environment: prod
+    concurrency:
+      group: tf-${{ matrix.team }}-prod
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: prod-plan-${{ matrix.team }}
+          path: .plans
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - uses: ./.github/actions/tf-setup
+        with:
+          role-arn: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          session-name: promote-prod-${{ matrix.team }}-${{ github.run_id }}
+      - name: prod deploy (saved plan)
+        run: bash scripts/tf.sh apply-saved "${{ matrix.team }}" prod

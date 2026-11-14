@@ -65,3 +65,9 @@ variable "state_bucket_name" {
   type        = string
   default     = null
 }
+
+variable "plan_branches" {
+  description = "Branches whose workflows may use the read-only plan role (prod plan before approval)"
+  type        = list(string)
+  default     = ["main"]
+}

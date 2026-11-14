@@ -31,3 +31,9 @@ variable "security_group_id" {
   type        = string
   default     = null
 }
+
+variable "endpoint_security_group_ids" {
+  description = "Security groups of EXISTING VPC interface endpoints (STS, Kinesis) to open on 443 for this workspace's SG"
+  type        = list(string)
+  default     = []
+}

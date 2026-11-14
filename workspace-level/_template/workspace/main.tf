@@ -31,6 +31,8 @@ module "network" {
   new_subnets       = var.network.new_subnets
   route_table_ids   = var.network.route_table_ids
   security_group_id = var.network.security_group_id
+
+  endpoint_security_group_ids = var.network.endpoint_security_group_ids
 }
 
 module "workspace" {

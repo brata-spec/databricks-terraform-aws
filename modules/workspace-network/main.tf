@@ -112,3 +112,15 @@ resource "aws_vpc_security_group_egress_rule" "internet" {
   to_port           = each.value[1]
   description       = "Databricks ${each.key}"
 }
+
+# --- Existing VPC interface endpoints (STS, Kinesis, ...) --------------------------------
+# Endpoints in a shared VPC usually only accept their own SG. Let this workspace's SG in on 443.
+resource "aws_vpc_security_group_ingress_rule" "to_endpoints" {
+  for_each                     = toset(var.endpoint_security_group_ids)
+  security_group_id            = each.value
+  referenced_security_group_id = local.security_group_id
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+  description                  = "HTTPS from Databricks workspace ${var.name}"
+}

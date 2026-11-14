@@ -4,13 +4,24 @@
 #
 #   - Unity Catalog metastore for the region: created here, or an EXISTING one
 #     looked up by name (one metastore per region per account)
-#   - deployer service principal in the platform admin group (metastore rights)
+#   - platform admin group (created here or existing) + the deployer SP in it
 #   - optional account groups for teams (skip if they come from SCIM)
 ###############################################################################
 
-data "databricks_group" "platform_admins" {
+resource "databricks_group" "platform_admins" {
+  count        = var.create_platform_admin_group ? 1 : 0
   provider     = databricks.mws
   display_name = var.platform_admin_group
+}
+
+data "databricks_group" "platform_admins" {
+  count        = var.create_platform_admin_group ? 0 : 1
+  provider     = databricks.mws
+  display_name = var.platform_admin_group
+}
+
+locals {
+  platform_admin_group_id = var.create_platform_admin_group ? databricks_group.platform_admins[0].id : data.databricks_group.platform_admins[0].id
 }
 
 data "databricks_service_principal" "deployer" {
@@ -21,7 +32,7 @@ data "databricks_service_principal" "deployer" {
 resource "databricks_group_member" "deployer" {
   count     = var.manage_deployer_membership ? 1 : 0
   provider  = databricks.mws
-  group_id  = data.databricks_group.platform_admins.id
+  group_id  = local.platform_admin_group_id
   member_id = data.databricks_service_principal.deployer.id
 }
 

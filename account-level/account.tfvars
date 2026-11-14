@@ -1,19 +1,21 @@
 region = "us-east-1"
 
-# Client already has a Databricks account: if a metastore exists in this region,
-# set create = false and give its exact name. Otherwise create = true.
+# One metastore per region per account: us-east-1 already has one, so attach to it.
+# Everything INSIDE it for this repo is new (credential, location, catalogs, owners).
 metastore = {
   create = false
-  name   = "<existing-metastore-name>"
+  name   = "metastore-us-east-1"
 }
 
-platform_admin_group       = "dbr-platform-admins"
-manage_deployer_membership = true
+# New platform admin group: owns this repo's UC objects, ADMIN on every workspace.
+# The new deployer service principal is added to it.
+platform_admin_group        = "dbxp-platform-admins"
+create_platform_admin_group = true
+manage_deployer_membership  = true
 
-# Create team groups here only if they are NOT synced from the IdP (SCIM).
-# A group created here and also pushed by SCIM will conflict.
+# New team groups (no SCIM in this account)
 account_groups = [
-  # "dbr-de-engineers", "dbr-de-analysts",
-  # "dbr-ds-engineers", "dbr-ds-analysts",
-  # "dbr-elections-engineers", "dbr-elections-analysts",
+  "dbxp-de-admins",
+  "dbxp-de-engineers",
+  "dbxp-de-analysts",
 ]
