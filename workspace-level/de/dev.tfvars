@@ -15,8 +15,8 @@ network = {
   }
   # Existing private route tables (route to the NAT + S3 gateway endpoint), one per AZ
   route_table_ids = {
-    "us-east-1a" = "rtb-<private-us-east-1a>"
-    "us-east-1b" = "rtb-<private-us-east-1b>"
+    "us-east-1a" = "rtb-06d59590ec53661a3"
+    "us-east-1b" = "rtb-0156dc945c183d77d"
   }
 
   # security_group_id not set -> a new SG "dbxp-dev-de-workspace" with the Databricks rules.
