@@ -7,15 +7,14 @@ terraform {
     }
   }
 
-  # Step 1: apply with local state (the bucket doesn't exist yet).
-  # Step 2: uncomment, then `terraform init -migrate-state`.
-  # backend "s3" {
-  #   bucket       = "dbxp-tfstate-473640421776-us-east-1"
-  #   key          = "bootstrap/terraform.tfstate"
-  #   region       = "us-east-1"
-  #   encrypt      = true
-  #   use_lockfile = true
-  # }
+  # State lives in the bucket this stack created (migrated after the first apply).
+  backend "s3" {
+    bucket       = "dbxp-tfstate-473640421776-us-east-1"
+    key          = "bootstrap/terraform.tfstate"
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true
+  }
 }
 
 provider "aws" {
